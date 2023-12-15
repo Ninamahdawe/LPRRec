@@ -1,81 +1,92 @@
 import cv2
-import os
+import numpy as np
+import time
+# from ultralytics import YOLO
 import pytesseract
-from ultralytics import YOLO
 
-# Get the current working directory
-projectdir = os.getcwd()
 
-# Define the paths to YOLO weights and OpenVINO model
-yolo_weights_path = os.path.join(projectdir, "testfiles", "best.pt")
-openvino_model_path = os.path.join(
-    projectdir, "testfiles", "best_openvino_model")
+def detect_and_recognize_license_plate(image):
+    """Detects and recognizes the license plate in an image.
 
-try:
-    # Load YOLO model
-    yolo_model = YOLO(yolo_weights_path)
-    print("YOLO Model Loaded")
-except FileNotFoundError:
-    print(f"Error: File not found at path: {yolo_weights_path}")
+    Args:
+        image: A NumPy array representing the image.
 
-try:
-    # Load OpenVINO model
-    ov_model = YOLO(openvino_model_path)
-    print("OpenVINO Model Loaded")
-except FileNotFoundError:
-    print(f"Error: File not found at path: {openvino_model_path}")
+    Returns:
+        A string representing the license plate number, or None if no license plate
+        was detected or recognized.
+    """
 
-# Open a video capture
-video = cv2.VideoCapture(0)
+    start_time = time.time()
 
-while True:
-    ret, frame = video.read()
-    if not ret:
-        break
+    # Perform object detection using YOLO
+    yolo_model = YOLO("license_plate_openvino_model", task="detect")
+    yolo_results = yolo_model(image)
 
-    frame = cv2.resize(frame, (640, 640))
-    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    frame = cv2.merge((frame, frame, frame))
+    # Check if YOLO detected any objects
+    if hasattr(yolo_results, 'xyxy') and yolo_results.xyxy is not None and len(yolo_results.xyxy[0]) > 0:
+        # Assuming the first detected object is the license plate
+        license_plate_box = yolo_results.xyxy[0][0].cpu().numpy()
 
-    try:
-        # Process frame with YOLO model
-        yolo_results = yolo_model(frame)
-        yolo_boxes = yolo_results[0].boxes.xyxy
+        # Crop the license plate from the image
+        license_plate_image = image[
+            int(license_plate_box[1]):int(license_plate_box[3]),
+            int(license_plate_box[0]):int(license_plate_box[2])
+        ]
 
-        for box in yolo_boxes:
-            x1, y1, x2, y2 = box
-            cv2.rectangle(frame, (int(x1), int(y1)),
-                          (int(x2), int(y2)), (0, 255, 0), 2)
+        # Preprocess the license plate image
+        license_plate_image = cv2.resize(license_plate_image, (300, 100))
+        license_plate_image = cv2.cvtColor(
+            license_plate_image, cv2.COLOR_BGR2GRAY)
+        license_plate_image = cv2.GaussianBlur(license_plate_image, (3, 3), 0)
 
-            # Extract text using Pytesseract
-            roi = frame[int(y1):int(y2), int(x1):int(x2)]
-            text = pytesseract.image_to_string(roi, config='--psm 6')
-            print(f"YOLO Text: {text}")
-    except NameError:
-        pass  # yolo_model is not defined
+        # Perform OCR on the license plate image
+        try:
+            license_plate_number = pytesseract.image_to_string(
+                license_plate_image, lang='eng', config='--psm 6').strip()
+        except Exception as e:
+            print('Error performing OCR:', e)
+            return None
 
-    try:
-        # Process frame with OpenVINO model
-        ov_results = ov_model(frame)
-        ov_boxes = ov_results[0].boxes.xyxy
+        # Draw a rectangle around the license plate
+        cv2.rectangle(image, (int(license_plate_box[0]), int(license_plate_box[1])),
+                      (int(license_plate_box[2]), int(license_plate_box[3])), (0, 255, 0), 2)
 
-        for box in ov_boxes:
-            x1, y1, x2, y2 = box
-            cv2.rectangle(frame, (int(x1), int(y1)),
-                          (int(x2), int(y2)), (255, 0, 0), 2)
+        # Add text to the image
+        cv2.putText(image, license_plate_number,
+                    (int(license_plate_box[0]), int(
+                        license_plate_box[1]) - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
 
-            # Extract text using Pytesseract
-            roi = frame[int(y1):int(y2), int(x1):int(x2)]
-            text = pytesseract.image_to_string(roi, config='--psm 6')
-            print(f"OpenVINO Text: {text}")
-    except NameError:
-        pass  # ov_model is not defined
+        # Display the image with a delay
+        cv2.imshow('Image', image)
+        cv2.waitKey(0)
 
-    cv2.imshow("Object Detection", frame)
+        # Close all OpenCV windows
+        cv2.destroyAllWindows()
 
-    if cv2.waitKey(1) == ord('q'):
-        break
+        end_time = time.time()
+        detection_time = end_time - start_time
+        print('Detection time:', detection_time, 'seconds')
 
-# Release video capture and close windows
-video.release()
-cv2.destroyAllWindows()
+        return license_plate_number
+    else:
+        print('No license plate detected.')
+        return None
+
+
+def main():
+    image = cv2.imread('testfiles/test.jpg')
+
+    if image is not None:
+        license_plate_number = detect_and_recognize_license_plate(image)
+
+        if license_plate_number is not None:
+            print('License plate number:', license_plate_number)
+        else:
+            print('License plate not recognized.')
+    else:
+        print('Error: Image not found.')
+
+
+if __name__ == '__main__':
+    main()
